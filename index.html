@@ -238,7 +238,27 @@
 
     <div id="modal" onclick="this.style.display='none'"><img id="modal-img" src=""></div>
 
-    <script>
+    <script type="module">
+        // Importando as ferramentas do Firebase via CDN (Web Link)
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+        // Suas chaves reais do Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyBrOxEErV08oxI7FEZOBq3j7bd6uvQZrBg",
+            authDomain: "pokemon2-efac5.firebaseapp.com",
+            databaseURL: "https://pokemon2-efac5-default-rtdb.firebaseio.com",
+            projectId: "pokemon2-efac5",
+            storageBucket: "pokemon2-efac5.firebasestorage.app",
+            messagingSenderId: "718864930782",
+            appId: "1:718864930782:web:2189efe8200df1a7d66f4f",
+            measurementId: "G-J6VVE704NC"
+        };
+
+        // Inicializando o Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
         let currentUser = null;
 
         function toggleAuth() {
@@ -248,7 +268,7 @@
                 document.getElementById('register-box').style.display === 'none' ? 'block' : 'none';
         }
 
-        function handleRegister() {
+        async function handleRegister() {
             const u = document.getElementById('user-reg').value.trim();
             const p = document.getElementById('pass-reg').value.trim();
             
@@ -256,7 +276,9 @@
                 return alert("Usuário e senha devem ter pelo menos 3 caracteres!");
             }
             
-            if(localStorage.getItem(`user_${u}`)) {
+            const userRef = ref(db, `users/${u}`);
+            const snapshot = await get(userRef);
+            if(snapshot.exists()) {
                 return alert("Esse nome de treinador já está em uso!");
             }
 
@@ -270,22 +292,26 @@
                 trades: []
             };
             
-            localStorage.setItem(`user_${u}`, JSON.stringify(userData));
-            localStorage.setItem(`id_map_${randomID}`, u); 
+            // Salva no Banco de Dados Realtime
+            await set(ref(db, `users/${u}`), userData);
+            await set(ref(db, `id_maps/${randomID}`), u); 
+            
             alert("Cadastro realizado! Seu ID é: " + randomID);
             toggleAuth();
         }
 
-        function handleLogin() {
+        async function handleLogin() {
             const u = document.getElementById('user-login').value.trim();
             const p = document.getElementById('pass-login').value.trim();
-            const rawData = localStorage.getItem(`user_${u}`);
+            
+            const snapshot = await get(ref(db, `users/${u}`));
+            if(!snapshot.exists()) return alert("Treinador não encontrado!");
 
-            if(!rawData) return alert("Treinador não encontrado!");
-
-            const user = JSON.parse(rawData);
+            const user = snapshot.val();
             if(user.password === p) {
                 currentUser = user;
+                currentUser.collection = currentUser.collection || [];
+                currentUser.trades = currentUser.trades || [];
                 startApp();
             } else {
                 alert("Senha incorreta!");
@@ -297,16 +323,33 @@
             document.getElementById('main-app').style.display = 'block';
             document.getElementById('display-username').innerText = `Treinador: ${currentUser.username}`;
             document.getElementById('display-id').innerText = `ID: ${currentUser.id}`;
+            
+            // Escuta modificações em tempo real no banco de dados (crucial para as trocas online funcionarem instantaneamente)
+            onValue(ref(db, `users/${currentUser.username}`), (snapshot) => {
+                if(snapshot.exists()) {
+                    currentUser = snapshot.val();
+                    currentUser.collection = currentUser.collection || [];
+                    currentUser.trades = currentUser.trades || [];
+                    updateTradeNotifications();
+                    
+                    const activeTab = document.querySelector('.container.active');
+                    if(activeTab) {
+                        if(activeTab.id === 'tab-colecao') renderCollection();
+                        if(activeTab.id === 'tab-pokedex') initPokedex();
+                        if(activeTab.id === 'tab-trade') renderPendingTrades();
+                    }
+                }
+            });
+
             updateTimer();
             initPokedex();
-            updateTradeNotifications();
         }
 
         function logout() { location.reload(); }
 
-        function save(user = currentUser) {
+        async function save(user = currentUser) {
             if(user) {
-                localStorage.setItem(`user_${user.username}`, JSON.stringify(user));
+                await set(ref(db, `users/${user.username}`), user);
             }
         }
 
@@ -323,7 +366,7 @@
             if(id === 'tab-trade') renderPendingTrades();
         }
 
-        function drawCards() {
+        async function drawCards() {
             const now = Date.now();
             if(now - currentUser.lastClaim < 3600000) return;
 
@@ -339,7 +382,7 @@
                 img.style.width = "100px";
                 results.appendChild(img);
             }
-            save();
+            await save();
             updateTimer();
         }
 
@@ -362,19 +405,22 @@
             }
         }
 
-        // --- LÓGICA DE TROCAS ---
-        function sendTradeRequest() {
+        // --- LÓGICA DE TROCAS ONLINE ---
+        async function sendTradeRequest() {
             const targetID = document.getElementById('trade-target-id').value.trim();
             const myPoke = parseInt(document.getElementById('trade-my-poke').value);
             const targetPoke = parseInt(document.getElementById('trade-target-poke').value);
 
             if(!currentUser.collection.includes(myPoke)) return alert("Você não tem esse Pokémon!");
             
-            const targetUsername = localStorage.getItem(`id_map_${targetID}`);
-            if(!targetUsername) return alert("ID não encontrado!");
+            const idMapSnapshot = await get(ref(db, `id_maps/${targetID}`));
+            if(!idMapSnapshot.exists()) return alert("ID não encontrado!");
+            
+            const targetUsername = idMapSnapshot.val();
             if(targetUsername === currentUser.username) return alert("Você não pode trocar consigo mesmo!");
 
-            const targetUser = JSON.parse(localStorage.getItem(`user_${targetUsername}`));
+            const targetUserSnapshot = await get(ref(db, `users/${targetUsername}`));
+            const targetUser = targetUserSnapshot.val();
             
             const request = {
                 fromUser: currentUser.username,
@@ -385,7 +431,8 @@
 
             if(!targetUser.trades) targetUser.trades = [];
             targetUser.trades.push(request);
-            save(targetUser);
+            
+            await save(targetUser);
             alert("Proposta enviada!");
         }
 
@@ -410,32 +457,33 @@
             });
         }
 
-        function acceptTrade(index) {
+        async function acceptTrade(index) {
             const t = currentUser.trades[index];
-            const otherUser = JSON.parse(localStorage.getItem(`user_${t.fromUser}`));
+            const otherUserSnapshot = await get(ref(db, `users/${t.fromUser}`));
+            const otherUser = otherUserSnapshot.val();
+            otherUser.collection = otherUser.collection || [];
 
             if(!currentUser.collection.includes(t.want)) return alert("Você não tem mais esse Pokémon!");
             if(!otherUser.collection.includes(t.give)) return alert("O outro treinador não tem mais o Pokémon oferecido!");
 
-            // Realiza a troca
+            // Realiza a troca nos arrays locais
             currentUser.collection.splice(currentUser.collection.indexOf(t.want), 1);
             currentUser.collection.push(t.give);
+            
             otherUser.collection.splice(otherUser.collection.indexOf(t.give), 1);
             otherUser.collection.push(t.want);
 
             currentUser.trades.splice(index, 1);
-            save(currentUser);
-            save(otherUser);
-            alert("Troca efetuada!");
-            renderPendingTrades();
-            updateTradeNotifications();
+            
+            // Salva ambas as partes na nuvem
+            await save(currentUser);
+            await save(otherUser);
+            alert("Troca efetuada com sucesso!");
         }
 
-        function declineTrade(index) {
+        async function declineTrade(index) {
             currentUser.trades.splice(index, 1);
-            save();
-            renderPendingTrades();
-            updateTradeNotifications();
+            await save();
         }
 
         function updateTradeNotifications() {
@@ -491,6 +539,18 @@
                     if(d.data.length > 0) modalImg.src = d.data[0].images.large;
                 });
         }
+
+        // Como o script agora é um "módulo", as funções HTML nativas precisam ser expostas manualmente no objeto global "window"
+        window.toggleAuth = toggleAuth;
+        window.handleRegister = handleRegister;
+        window.handleLogin = handleLogin;
+        window.logout = logout;
+        window.showTab = showTab;
+        window.drawCards = drawCards;
+        window.sendTradeRequest = sendTradeRequest;
+        window.acceptTrade = acceptTrade;
+        window.declineTrade = declineTrade;
+        window.showCardZoom = showCardZoom;
     </script>
 </body>
 </html>
